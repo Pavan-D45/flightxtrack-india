@@ -22,7 +22,7 @@
   </div>
 
   <div class="grid">
-    <div class="panel wide"><h3>Traffic over time (since server started)</h3><div class="chartbox"><canvas id="c-time"></canvas></div></div>
+    <div class="panel wide"><h3>Traffic over time (since server started)</h3><p class="muted" id="time-note" style="margin:-6px 0 8px;font-size:.8rem"></p><div class="chartbox"><canvas id="c-time"></canvas></div></div>
     <div class="panel"><h3>Top airlines by flights in the air</h3><div class="chartbox"><canvas id="c-airlines"></canvas></div></div>
     <div class="panel"><h3>Flight phase</h3><div class="chartbox"><canvas id="c-phase"></canvas></div></div>
     <div class="panel"><h3>Altitude distribution</h3><div class="chartbox"><canvas id="c-alt"></canvas></div></div>
@@ -104,12 +104,16 @@ function analyse(flights) {
 
 async function timeline() {
   const h = await (await fetch("/api/history")).json();
+  const dot = h.length < 40 ? 4 : 0;   // show dots while there are few samples (a single point has no line)
   chart("c-time", { type: "line", data: {
       labels: h.map((p) => new Date(p.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
       datasets: [
-        { label: "In air", data: h.map((p) => p.air), borderColor: "#38bdf8", backgroundColor: "#38bdf822", fill: true, pointRadius: 0, tension: .3 },
-        { label: "On ground", data: h.map((p) => p.ground), borderColor: "#fbbf24", pointRadius: 0, tension: .3 },
-      ] }, options: { scales: { x: { ticks: { maxTicksLimit: 8 } } } } });
+        { label: "In air", data: h.map((p) => p.air), borderColor: "#38bdf8", backgroundColor: "#38bdf822", fill: true, pointRadius: dot, tension: .3 },
+        { label: "On ground", data: h.map((p) => p.ground), borderColor: "#fbbf24", pointRadius: dot, tension: .3 },
+      ] }, options: { scales: { x: { ticks: { maxTicksLimit: 8 } }, y: { beginAtZero: true } } } });
+  document.getElementById("time-note").textContent = h.length < 5
+    ? `Only ${h.length} sample${h.length === 1 ? "" : "s"} so far. One is recorded about every minute, so the line fills in shortly.`
+    : `${h.length} samples, covering ${Math.round((h[h.length - 1].t - h[0].t) / 60000)} minutes.`;
 }
 async function load() {
   try { const d = await fetchFlights(); analyse(d.flights); setUpdated(d.fetchedAt); await timeline(); } catch (e) { console.error(e); }
