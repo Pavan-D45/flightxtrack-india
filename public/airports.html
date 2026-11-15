@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Airports · FlightxTrack India</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="page">
+  <h2>Airports</h2>
+  <p class="sub">Indian airports with scheduled service, and aircraft currently low and close to each one (within 40 km, under ~10,000 ft). Arriving / departing is inferred from climb or descent rate, not from schedules.</p>
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="Search airport, city or IATA code…">
+    <select id="size"><option value="">All sizes</option><option value="large">Large only</option><option value="medium">Medium</option><option value="small">Small</option></select>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr>
+      <th data-k="iata">IATA</th><th data-k="name">Airport</th><th data-k="city">City</th>
+      <th data-k="arriving">Arriving</th><th data-k="departing">Departing</th><th data-k="total">Nearby total</th>
+    </tr></thead>
+    <tbody id="body"></tbody>
+  </table></div>
+  <br>
+  <div class="panel"><h3 id="detail-title">Select an airport row to see its aircraft</h3><ul class="toplist" id="detail"></ul></div>
+</div>
+<footer>Airports: OurAirports (public domain) · Aircraft: OpenSky Network</footer>
+<script src="/shared.js"></script>
+<script>
+let airports = [], stats = {}, flights = [], sortKey = "total", sortDir = -1, openIata = null;
+
+function compute() {
+  stats = {}; airports.forEach((a) => (stats[a.iata] = { arriving: 0, departing: 0, near: 0, total: 0, list: [] }));
+  for (const f of flights) {
+    const act = terminalActivity(f, airports, 40, 3048);
+    if (!act) continue;
+    const s = stats[act.airport.iata]; s[act.kind]++; s.total++; s.list.push({ f, act });
+  }
+}
+function show() {
+  const q = document.getElementById("q").value.trim().toLowerCase(), size = document.getElementById("size").value;
+  const rows = airports.filter((a) => (!size || a.size === size) && (!q || [a.iata, a.name, a.city].join(" ").toLowerCase().includes(q)))
+    .map((a) => ({ ...a, ...stats[a.iata] }));
+  rows.sort((a, b) => { const x = a[sortKey] ?? "", y = b[sortKey] ?? ""; return (x > y ? 1 : x < y ? -1 : 0) * sortDir; });
+  document.getElementById("body").innerHTML = rows.map((r) => `<tr data-i="${r.iata}" style="cursor:pointer">
+    <td><b>${r.iata}</b></td><td>${r.name}</td><td>${r.city || "—"}</td>
+    <td>${r.arriving}</td><td>${r.departing}</td><td>${r.total}</td></tr>`).join("");
+  detail();
+}
+function detail() {
+  if (!openIata) return;
+  const a = airports.find((x) => x.iata === openIata), s = stats[openIata];
+  document.getElementById("detail-title").textContent = `${a.iata} · ${a.name} (${s.total} aircraft nearby)`;
+  document.getElementById("detail").innerHTML = s.list.length
+    ? s.list.sort((x, y) => x.act.km - y.act.km).map(({ f, act }) =>
+        `<li><span><b>${f.callsign || f.icao24}</b> ${airlineOf(f) ? "· " + airlineOf(f) : ""}</span>
+         <span>${act.kind} · ${act.km} km · ${ftFromM(f.altitude).toLocaleString()} ft</span></li>`).join("")
+    : "<li><span class='muted'>No aircraft detected nearby right now.</span></li>";
+}
+document.querySelectorAll("th").forEach((th) => th.onclick = () => { const k = th.dataset.k; sortDir = k === sortKey ? -sortDir : (["iata","name","city"].includes(k) ? 1 : -1); sortKey = k; show(); });
+document.getElementById("body").addEventListener("click", (e) => { const tr = e.target.closest("tr"); if (tr) { openIata = tr.dataset.i; detail(); } });
+["q", "size"].forEach((id) => document.getElementById(id).addEventListener("input", show));
+
+async function load() {
+  try {
+    if (!airports.length) airports = await loadAirports();
+    const d = await fetchFlights(); flights = d.flights; setUpdated(d.fetchedAt);
+    compute(); show();
+  } catch (e) { document.getElementById("body").innerHTML = `<tr><td colspan="6">Data unavailable: ${e.message}</td></tr>`; }
+}
+load(); setInterval(load, 20000);
+</script>
+</body>
+</html>

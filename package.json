@@ -1,0 +1,8 @@
+{
+  "name": "flightxtrack",
+  "version": "1.0.0",
+  "description": "Live flights over India using public OpenSky Network data",
+  "main": "server.js",
+  "engines": { "node": ">=18" },
+  "scripts": { "start": "node server.js" }
+}

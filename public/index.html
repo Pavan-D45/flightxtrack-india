@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Map · FlightxTrack India</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="mapwrap" style="position:relative">
+  <div class="mapstats">
+    <div><b id="s-total">–</b>In air</div>
+    <div><b id="s-ground">–</b>On ground</div>
+  </div>
+  <div id="map"></div>
+  <aside id="list">
+    <header><input id="search" type="search" placeholder="Search callsign or airline…"></header>
+    <div class="rows" id="rows"></div>
+  </aside>
+</div>
+<div id="status"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/shared.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>

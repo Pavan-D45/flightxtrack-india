@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analytics · FlightxTrack India</title>
+<link rel="stylesheet" href="/style.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="page">
+  <h2>Analytics</h2>
+  <p class="sub">A live snapshot of air traffic over India, computed from the latest data.</p>
+
+  <div class="cards">
+    <div class="card"><small>Airborne now</small><b id="k-air">–</b></div>
+    <div class="card"><small>On ground</small><b id="k-ground">–</b></div>
+    <div class="card"><small>Avg altitude</small><b id="k-alt">–</b><span class="hint">feet, airborne only</span></div>
+    <div class="card"><small>Avg speed</small><b id="k-speed">–</b><span class="hint">knots, airborne only</span></div>
+    <div class="card"><small>Indian-registered</small><b id="k-india">–</b><span class="hint">share of all aircraft</span></div>
+    <div class="card"><small>Airlines seen</small><b id="k-airlines">–</b><span class="hint">identified by callsign</span></div>
+  </div>
+
+  <div class="grid">
+    <div class="panel wide"><h3>Traffic over time (since server started)</h3><div class="chartbox"><canvas id="c-time"></canvas></div></div>
+    <div class="panel"><h3>Top airlines by flights in the air</h3><div class="chartbox"><canvas id="c-airlines"></canvas></div></div>
+    <div class="panel"><h3>Flight phase</h3><div class="chartbox"><canvas id="c-phase"></canvas></div></div>
+    <div class="panel"><h3>Altitude distribution</h3><div class="chartbox"><canvas id="c-alt"></canvas></div></div>
+    <div class="panel"><h3>Speed distribution</h3><div class="chartbox"><canvas id="c-speed"></canvas></div></div>
+    <div class="panel"><h3>Aircraft by country of registration</h3><div class="chartbox"><canvas id="c-country"></canvas></div></div>
+    <div class="panel"><h3>Busiest routes right now <small id="route-cov"></small></h3><ul class="toplist" id="routes"></ul></div>
+    <div class="panel"><h3>Records</h3><ul class="toplist" id="records"></ul></div>
+  </div>
+</div>
+<footer>Data: OpenSky Network · History is kept in server memory/file and builds up while the server runs</footer>
+<script src="/shared.js"></script>
+<script>
+Chart.defaults.color = "#8fa0bd"; Chart.defaults.borderColor = "#2a3858"; Chart.defaults.maintainAspectRatio = false;
+const PALETTE = ["#38bdf8", "#fbbf24", "#4ade80", "#f472b6", "#a78bfa", "#fb923c", "#2dd4bf", "#f87171", "#94a3b8"];
+const charts = {};
+function chart(id, cfg) {
+  if (charts[id]) { charts[id].data = cfg.data; charts[id].update("none"); return; }
+  charts[id] = new Chart(document.getElementById(id), cfg);
+}
+const bucket = (vals, edges, labels) => {
+  const out = labels.map(() => 0);
+  vals.forEach((v) => { for (let i = 0; i < edges.length; i++) if (v < edges[i]) { out[i]++; return; } out[edges.length]++; });
+  return out;
+};
+const count = (arr) => arr.reduce((m, k) => (m[k] = (m[k] || 0) + 1, m), {});
+const topN = (obj, n) => Object.entries(obj).sort((a, b) => b[1] - a[1]).slice(0, n);
+const set = (id, v) => (document.getElementById(id).textContent = v);
+
+function analyse(flights) {
+  const air = flights.filter((f) => !f.onGround);
+  const alts = air.map((f) => f.altitude).filter((v) => v != null).map(ftFromM);
+  const spds = air.map((f) => f.speed).filter((v) => v != null).map(knFromMs);
+  const avg = (a) => (a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : 0);
+  const named = air.map(airlineOf).filter(Boolean);
+  const byAirline = count(named);
+
+  set("k-air", air.length); set("k-ground", flights.length - air.length);
+  set("k-alt", avg(alts).toLocaleString()); set("k-speed", avg(spds));
+  set("k-india", Math.round((flights.filter((f) => f.country === "India").length / flights.length) * 100) + "%");
+  set("k-airlines", Object.keys(byAirline).length);
+
+  const ta = topN(byAirline, 10);
+  chart("c-airlines", { type: "bar", data: { labels: ta.map((x) => x[0]), datasets: [{ data: ta.map((x) => x[1]), backgroundColor: "#38bdf8" }] },
+    options: { indexAxis: "y", plugins: { legend: { display: false } } } });
+
+  const ph = count(flights.map(phase));
+  chart("c-phase", { type: "doughnut", data: { labels: Object.keys(ph), datasets: [{ data: Object.values(ph), backgroundColor: PALETTE, borderWidth: 0 }] },
+    options: { plugins: { legend: { position: "right" } } } });
+
+  const aEdges = [5000, 15000, 25000, 30000, 35000, 40000], aLab = ["<5k", "5–15k", "15–25k", "25–30k", "30–35k", "35–40k", "40k+"];
+  chart("c-alt", { type: "bar", data: { labels: aLab, datasets: [{ label: "Aircraft", data: bucket(alts, aEdges, aLab), backgroundColor: "#fbbf24" }] }, options: { plugins: { legend: { display: false } } } });
+
+  const sEdges = [100, 200, 300, 400, 450, 500], sLab = ["<100", "100–200", "200–300", "300–400", "400–450", "450–500", "500+"];
+  chart("c-speed", { type: "bar", data: { labels: sLab, datasets: [{ label: "Aircraft", data: bucket(spds, sEdges, sLab), backgroundColor: "#4ade80" }] }, options: { plugins: { legend: { display: false } } } });
+
+  const tc = topN(count(flights.map((f) => f.country)), 8);
+  const rest = flights.length - tc.reduce((s, x) => s + x[1], 0);
+  if (rest > 0) tc.push(["Other", rest]);
+  chart("c-country", { type: "doughnut", data: { labels: tc.map((x) => x[0]), datasets: [{ data: tc.map((x) => x[1]), backgroundColor: PALETTE, borderWidth: 0 }] },
+    options: { plugins: { legend: { position: "right" } } } });
+
+  const routed = air.filter((f) => f.route);
+  const tr = topN(count(routed.map((f) => f.route.from.iata + " → " + f.route.to.iata)), 8);
+  document.getElementById("route-cov").textContent = `(${routed.length} of ${air.length} flights have a known route)`;
+  document.getElementById("routes").innerHTML = tr.length
+    ? tr.map(([r, n]) => `<li><b>${r}</b><span>${n} flight${n > 1 ? "s" : ""}</span></li>`).join("")
+    : "<li><span class='muted'>Routes are still loading — check back in a minute.</span></li>";
+
+  const withAlt = air.filter((f) => f.altitude != null), withSpd = air.filter((f) => f.speed != null);
+  const hi = withAlt.sort((a, b) => b.altitude - a.altitude)[0], fast = withSpd.sort((a, b) => b.speed - a.speed)[0];
+  const climb = air.filter((f) => f.vertRate != null).sort((a, b) => b.vertRate - a.vertRate)[0];
+  const li = (label, f, val) => f ? `<li><span>${label}</span><span><b>${f.callsign || f.icao24}</b> · ${val}</span></li>` : "";
+  document.getElementById("records").innerHTML =
+    li("Highest", hi, hi && ftFromM(hi.altitude).toLocaleString() + " ft") +
+    li("Fastest", fast, fast && knFromMs(fast.speed) + " kt") +
+    li("Fastest climb", climb, climb && Math.round(climb.vertRate * 196.85).toLocaleString() + " ft/min") +
+    `<li><span>Busiest airline</span><span><b>${ta[0] ? ta[0][0] : "—"}</b> · ${ta[0] ? ta[0][1] : 0} flights</span></li>`;
+}
+
+async function timeline() {
+  const h = await (await fetch("/api/history")).json();
+  chart("c-time", { type: "line", data: {
+      labels: h.map((p) => new Date(p.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })),
+      datasets: [
+        { label: "In air", data: h.map((p) => p.air), borderColor: "#38bdf8", backgroundColor: "#38bdf822", fill: true, pointRadius: 0, tension: .3 },
+        { label: "On ground", data: h.map((p) => p.ground), borderColor: "#fbbf24", pointRadius: 0, tension: .3 },
+      ] }, options: { scales: { x: { ticks: { maxTicksLimit: 8 } } } } });
+}
+async function load() {
+  try { const d = await fetchFlights(); analyse(d.flights); setUpdated(d.fetchedAt); await timeline(); } catch (e) { console.error(e); }
+}
+load(); setInterval(load, 30000);
+</script>
+</body>
+</html>

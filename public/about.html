@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>About · FlightxTrack India</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="page about" style="max-width:800px">
+  <h2>About FlightxTrack</h2>
+  <p class="sub">Live air traffic over India, built on public data.</p>
+
+  <div class="panel"><h3>How it works</h3>
+    <ul>
+      <li>Aircraft with ADS-B transponders broadcast their position, altitude and speed.</li>
+      <li>Volunteer receivers feed this to the <a href="https://opensky-network.org" target="_blank" rel="noopener">OpenSky Network</a>, which shares it freely.</li>
+      <li>Our server asks OpenSky for the box around India every 30 seconds, caches it, and records counts over time.</li>
+      <li>This website reads the cached data and shows it on the map, in the table and in the charts.</li>
+    </ul>
+  </div>
+  <br>
+  <div class="panel"><h3>Pages</h3>
+    <ul>
+      <li><b>Live Map</b>: every aircraft on a map; click one to see details and its recent trail.</li>
+      <li><b>Flights</b>: sortable, filterable table of all aircraft.</li>
+      <li><b>Analytics</b>: airline share, altitude and speed distributions, countries, records and traffic over time.</li>
+    </ul>
+  </div>
+  <br>
+  <div class="panel"><h3>Limitations</h3>
+    <ul>
+      <li>Coverage depends on volunteer receivers, so some flights (especially low or remote) may be missing.</li>
+      <li>Airline names are derived from the callsign prefix; unknown prefixes show as unidentified.</li>
+      <li>Origin/destination routes are not part of this data source.</li>
+      <li>This is for information only and must not be used for navigation or safety decisions.</li>
+    </ul>
+  </div>
+</div>
+<footer>FlightxTrack · Data: OpenSky Network · Map: OpenStreetMap</footer>
+<script src="/shared.js"></script>
+</body>
+</html>

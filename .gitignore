@@ -1,0 +1,7 @@
+node_modules/
+# generated at runtime
+history.json
+routes.json
+server.log
+server.err
+.env

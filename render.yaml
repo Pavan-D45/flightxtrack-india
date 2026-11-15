@@ -1,0 +1,9 @@
+# Render "Blueprint": tells Render how to run the site.
+services:
+  - type: web
+    name: flightxtrack-india
+    runtime: node
+    plan: free
+    buildCommand: echo "no build step"
+    startCommand: node server.js
+    healthCheckPath: /api/history

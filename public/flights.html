@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flights · FlightxTrack India</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="page">
+  <h2>Flights</h2>
+  <p class="sub">Every aircraft currently reported over India. Click a column to sort.</p>
+  <div class="toolbar">
+    <input id="q" type="search" placeholder="Search callsign, airline, country, city or airport code…">
+    <select id="fphase"><option value="">All phases</option><option>Climbing</option><option>Cruising / level</option><option>Descending</option><option>On ground</option></select>
+    <select id="fcountry"><option value="">All countries</option></select>
+  </div>
+  <p class="muted" id="count"></p>
+  <div class="tablewrap"><table>
+    <thead><tr>
+      <th data-k="callsign">Callsign</th><th data-k="airline">Airline</th><th data-k="routeStr">Route</th><th data-k="country">Registered in</th>
+      <th data-k="altitude">Altitude (ft)</th><th data-k="speed">Speed (kt)</th><th data-k="heading">Heading</th>
+      <th data-k="phase">Phase</th><th data-k="lat">Position</th>
+    </tr></thead>
+    <tbody id="body"></tbody>
+  </table></div>
+</div>
+<footer>Data: OpenSky Network · Positions are approximate and may be delayed</footer>
+<script src="/shared.js"></script>
+<script>
+let rows = [], sortKey = "altitude", sortDir = -1;
+
+function build(flights) {
+  rows = flights.map((f) => ({ ...f, airline: airlineOf(f) || "", phase: phase(f), routeStr: routeCodes(f) || "" }));
+  const sel = document.getElementById("fcountry");
+  const cur = sel.value;
+  const countries = [...new Set(rows.map((r) => r.country))].sort();
+  sel.innerHTML = '<option value="">All countries</option>' + countries.map((c) => `<option>${c}</option>`).join("");
+  sel.value = cur;
+}
+function show() {
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  const ph = document.getElementById("fphase").value, co = document.getElementById("fcountry").value;
+  let list = rows.filter((r) =>
+    (!q || [r.callsign, r.airline, r.country, r.routeStr, r.route ? r.route.from.city + " " + r.route.to.city : ""].join(" ").toLowerCase().includes(q)) && (!ph || r.phase === ph) && (!co || r.country === co));
+  list.sort((a, b) => {
+    const x = a[sortKey] ?? (typeof a[sortKey] === "string" ? "" : -Infinity), y = b[sortKey] ?? (typeof b[sortKey] === "string" ? "" : -Infinity);
+    return (x > y ? 1 : x < y ? -1 : 0) * sortDir;
+  });
+  document.getElementById("count").textContent = `${list.length} of ${rows.length} aircraft`;
+  document.getElementById("body").innerHTML = list.slice(0, 500).map((r) => `<tr>
+    <td><b>${r.callsign || "—"}</b></td><td>${r.airline || "—"}</td>
+    <td>${r.route ? `<b>${r.routeStr}</b> <small>${r.route.from.city} → ${r.route.to.city}</small>` : "—"}</td><td>${r.country}</td>
+    <td>${r.altitude != null ? ftFromM(r.altitude).toLocaleString() : "—"}</td>
+    <td>${r.speed != null ? knFromMs(r.speed) : "—"}</td>
+    <td>${r.heading != null ? Math.round(r.heading) + "°" : "—"}</td>
+    <td><span class="badge ${r.phase === "On ground" ? "ground" : r.phase}">${r.phase}</span></td>
+    <td>${r.lat.toFixed(2)}, ${r.lon.toFixed(2)}</td></tr>`).join("");
+}
+document.querySelectorAll("th").forEach((th) => th.onclick = () => {
+  const k = th.dataset.k; sortDir = k === sortKey ? -sortDir : 1; sortKey = k; show();
+});
+["q", "fphase", "fcountry"].forEach((id) => document.getElementById(id).addEventListener("input", show));
+
+async function load() {
+  try { const d = await fetchFlights(); build(d.flights); setUpdated(d.fetchedAt); show(); }
+  catch (e) { document.getElementById("count").textContent = "Data unavailable: " + e.message; }
+}
+load(); setInterval(load, 20000);
+</script>
+</body>
+</html>
