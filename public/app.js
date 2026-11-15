@@ -32,7 +32,7 @@ function routeHtml(f) {
 }
 function popup(f) {
   return `<b>${f.callsign || "Unknown"}</b> ${airlineOf(f) ? "· " + airlineOf(f) : ""}${routeHtml(f)}${nearText(f)}<br>
-    Registered: ${f.country}<br>
+    ${f.type ? `Aircraft: ${f.type}${f.reg ? " (" + f.reg + ")" : ""}<br>` : ""}Registered: ${f.country}<br>
     Status: ${phase(f)}<br>
     Altitude: ${f.altitude != null ? ftFromM(f.altitude).toLocaleString() + " ft" : "–"}<br>
     Speed: ${f.speed != null ? knFromMs(f.speed) + " kt (" + kmhFromMs(f.speed) + " km/h)" : "–"}<br>

@@ -7,8 +7,8 @@ const fs = require("fs");
 const path = require("path");
 
 const PORT = process.env.PORT || 3000;
-const POLL_MS = 30000;          // background poll interval (OpenSky anonymous limits are strict)
-const HISTORY_MAX = 2880;       // 24h at 30s
+const POLL_MS = 45000;          // pause between polls (a poll itself takes ~10-15s)
+const HISTORY_MAX = 1440;       // ~16h at ~60s per sample
 const HISTORY_FILE = path.join(__dirname, "history.json");
 
 const BOX = { lamin: 6.0, lamax: 37.5, lomin: 68.0, lomax: 97.5 }; // covers India
@@ -69,14 +69,100 @@ async function work() {
   fs.writeFile(ROUTES_FILE, JSON.stringify(routeCache), () => {});
 }
 
+// ---- Data source 1 (primary): adsb.lol, free community ADS-B API, no key ----
+// It answers "aircraft within N nautical miles of a point" (max 250 nm), so we tile India with circles.
+const TILES = [];
+for (const lat of [10.5, 16, 21.5, 27, 32.5]) for (const lon of [71, 76.5, 82, 87.5, 93]) TILES.push([lat, lon]);
+const FT = 0.3048, KT = 0.514444;
+
+// Country from the ICAO24 address block (adsb.lol doesn't give it). Unlisted blocks -> "Other".
+const BLOCKS = [
+  [0x800000, 0x83ffff, "India"], [0xa00000, 0xafffff, "United States"], [0x400000, 0x43ffff, "United Kingdom"],
+  [0x3c0000, 0x3fffff, "Germany"], [0x380000, 0x3bffff, "France"], [0x480000, 0x487fff, "Netherlands"],
+  [0x880000, 0x887fff, "Thailand"], [0x896000, 0x896fff, "United Arab Emirates"], [0x06a000, 0x06afff, "Qatar"],
+  [0x710000, 0x717fff, "Saudi Arabia"], [0x780000, 0x7bffff, "China"], [0x750000, 0x757fff, "Malaysia"],
+  [0x768000, 0x76ffff, "Singapore"], [0x770000, 0x777fff, "Sri Lanka"], [0x700000, 0x700fff, "Bangladesh"],
+  [0x760000, 0x767fff, "Pakistan"], [0x70c000, 0x70cfff, "Oman"], [0x706000, 0x706fff, "Kuwait"],
+  [0x894000, 0x894fff, "Bahrain"], [0x4b8000, 0x4bffff, "Turkey"], [0x100000, 0x1fffff, "Russia"],
+  [0x7c0000, 0x7fffff, "Australia"], [0xc00000, 0xc3ffff, "Canada"], [0x840000, 0x87ffff, "Japan"],
+  [0x8a0000, 0x8a7fff, "Indonesia"],
+];
+function countryOf(hex) {
+  const n = parseInt(hex, 16);
+  const b = BLOCKS.find(([lo, hi]) => n >= lo && n <= hi);
+  return b ? b[2] : "Other";
+}
+function parseAdsbLol(a) {
+  const ground = a.alt_baro === "ground";
+  const altFt = typeof a.alt_baro === "number" ? a.alt_baro : a.alt_geom;
+  return {
+    icao24: a.hex,
+    callsign: (a.flight || "").trim() || null,
+    country: countryOf(a.hex),
+    lon: a.lon, lat: a.lat,
+    altitude: ground ? 0 : altFt != null ? altFt * FT : null,            // metres
+    onGround: ground,
+    speed: a.gs != null ? a.gs * KT : null,                               // m/s
+    heading: a.track ?? null,
+    vertRate: (a.baro_rate ?? a.geom_rate) != null ? (a.baro_rate ?? a.geom_rate) * FT / 60 : null,  // m/s
+    lastContact: Math.round(Date.now() / 1000 - (a.seen || 0)),
+    type: a.t || null,                                                    // aircraft type, e.g. A320
+    reg: a.r || null,                                                     // registration
+  };
+}
+async function fromAdsbLol() {
+  const seen = new Map();
+  let ok = 0, lastErr = null;
+  for (const [lat, lon] of TILES) {
+    try {
+      const r = await fetch(`https://api.adsb.lol/v2/point/${lat}/${lon}/250`, { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) throw new Error(`adsb.lol responded ${r.status}`);
+      for (const a of (await r.json()).ac || []) if (a.lat != null && a.lon != null) seen.set(a.hex, a);
+      ok++;
+    } catch (e) { lastErr = e; }
+    await new Promise((x) => setTimeout(x, 400));
+  }
+  if (ok < TILES.length / 2) throw lastErr || new Error("adsb.lol returned too few regions");
+  return [...seen.values()].map(parseAdsbLol)
+    .filter((f) => f.lat >= BOX.lamin && f.lat <= BOX.lamax && f.lon >= BOX.lomin && f.lon <= BOX.lomax);
+}
+
+// ---- Data source 2 (backup): OpenSky Network ----
+async function fromOpenSky() {
+  const res = await fetch(OPENSKY, { signal: AbortSignal.timeout(20000) });
+  if (!res.ok) throw new Error(`OpenSky responded ${res.status}`);
+  return ((await res.json()).states || []).map(parseState).filter((f) => f.lat != null && f.lon != null);
+}
+
+let openSkyPausedUntil = 0;
+
+// "fetch failed" alone is useless; include the underlying network error code.
+const why = (e) => e.message + (e.cause ? ` (${e.cause.code || e.cause.message})` : "");
+
 async function poll() {
   try {
-    const res = await fetch(OPENSKY, { signal: AbortSignal.timeout(20000) });
-    if (!res.ok) throw new Error(`OpenSky responded ${res.status}`);
-    const json = await res.json();
-    const flights = (json.states || []).map(parseState).filter((f) => f.lat != null && f.lon != null);
-    latest = { fetchedAt: Date.now(), count: flights.length, flights };
-    lastError = null;
+    // Ask both sources and merge by aircraft ID for the best coverage; either one alone is enough.
+    const errors = [], got = {};
+    const skipOpenSky = Date.now() < openSkyPausedUntil;
+    const jobs = [["adsb.lol", fromAdsbLol], ...(skipOpenSky ? [] : [["OpenSky", fromOpenSky]])];
+    await Promise.all(jobs.map(async ([name, fn]) => {
+      try { got[name] = await fn(); }
+      catch (e) {
+        errors.push(`${name}: ${why(e)}`);
+        if (name === "OpenSky") openSkyPausedUntil = Date.now() + 5 * 60e3;   // back off for 5 min after any failure (e.g. 429)
+      }
+    }));
+    const byId = new Map();
+    for (const f of got["OpenSky"] || []) byId.set(f.icao24, f);
+    for (const f of got["adsb.lol"] || []) {
+      const o = byId.get(f.icao24);
+      byId.set(f.icao24, { ...o, ...f, country: o?.country || f.country });   // adsb.lol: type/reg/fresher fields; OpenSky: authoritative country
+    }
+    const flights = [...byId.values()];
+    const source = Object.keys(got).filter((k) => got[k].length).join(" + ");
+    if (!flights.length) throw new Error(errors.join("; ") || "no aircraft returned");
+    latest = { fetchedAt: Date.now(), count: flights.length, source, flights };
+    lastError = errors.length ? errors.join("; ") : null;
 
     const air = flights.filter((f) => !f.onGround);
     const alts = air.map((f) => f.altitude).filter((a) => a != null);
@@ -93,8 +179,8 @@ async function poll() {
     console.log("poll failed:", e.message);
   }
 }
-poll();
-setInterval(poll, POLL_MS);
+// Sequential loop (never overlaps, even though one poll takes ~10-15s)
+(async function loop() { await poll(); setTimeout(loop, POLL_MS); })();
 
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json" };
 const json = (res, code, obj) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(obj)); };

@@ -4,7 +4,7 @@ A website that shows live air traffic over India using free, public data. It has
 
 - **Stack:** Node.js (no npm packages) + plain HTML/CSS/JavaScript, Leaflet (maps), Chart.js (charts)
 - **Data sources (all free, no API keys):**
-  - [OpenSky Network](https://opensky-network.org): live aircraft positions
+  - [adsb.lol](https://adsb.lol) (primary) and [OpenSky Network](https://opensky-network.org) (backup): live aircraft positions. The server asks both and merges them by aircraft ID. If one is blocked or rate-limited, the other keeps the site working.
   - [OurAirports](https://ourairports.com/data/): airport list (public domain)
   - [adsbdb.com](https://www.adsbdb.com): flight routes (origin → destination) by callsign
 
@@ -70,10 +70,12 @@ Free-tier notes: the service sleeps after ~15 min without visitors (first load i
 
 ## 3. Data flow, step by step
 
-### A. Every 30 seconds (server)
-1. `poll()` calls OpenSky: `GET /api/states/all?lamin=6&lamax=37.5&lomin=68&lomax=97.5`. That box covers India.
-2. OpenSky returns each aircraft as an **array** (`s[0]`, `s[1]`…). `parseState()` converts it into an object: `{ icao24, callsign, country, lat, lon, altitude, speed, heading, vertRate, onGround }`.
-3. Aircraft without a position are dropped. The result is kept in memory as `latest`.
+### A. About every minute (server)
+1. `poll()` asks two sources at the same time:
+   - **adsb.lol** only answers "aircraft within 250 nm of a point", so the server queries a 5×5 grid of points that tile India (`TILES`) and removes duplicates.
+   - **OpenSky** takes one rectangle: `GET /api/states/all?lamin=6&lamax=37.5&lomin=68&lomax=97.5`. If it fails (e.g. HTTP 429 rate limit), it is skipped for 5 minutes.
+2. Both are converted into the same object: `{ icao24, callsign, country, lat, lon, altitude, speed, heading, vertRate, onGround, type, reg }`, in metric units. adsb.lol uses feet and knots, so `parseAdsbLol()` converts; it also gives no country, so `countryOf()` derives it from the aircraft's ICAO24 address block.
+3. The two lists are merged by `icao24`. adsb.lol adds aircraft type and registration, and OpenSky's country wins when both have one. Aircraft without a position are dropped. The result is kept in memory as `latest`, along with `source` (which providers answered).
 4. One summary row is added to `history`: `{ t, air, ground, avgAlt }`. The last 2,880 rows (24 h) are saved to `history.json`.
 
 ### B. When someone requests `/api/flights` (server)
