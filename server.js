@@ -7,7 +7,7 @@ const fs = require("fs");
 const path = require("path");
 
 const PORT = process.env.PORT || 3000;
-const POLL_MS = 45000;          // pause between polls (a poll itself takes ~10-15s)
+const POLL_MS = 20000;          // pause between polls (a poll itself takes ~25s)
 const HISTORY_MAX = 1440;       // ~16h at ~60s per sample
 const HISTORY_FILE = path.join(__dirname, "history.json");
 
@@ -72,7 +72,7 @@ async function work() {
 // ---- Data source 1 (primary): adsb.lol, free community ADS-B API, no key ----
 // It answers "aircraft within N nautical miles of a point" (max 250 nm), so we tile India with circles.
 const TILES = [];
-for (const lat of [10.5, 16, 21.5, 27, 32.5]) for (const lon of [71, 76.5, 82, 87.5, 93]) TILES.push([lat, lon]);
+for (const lat of [10.5, 16, 21.5, 27, 32.5]) for (const lon of [71, 76.5, 82, 87.5, 93]) if (!(lat === 32.5 && lon > 85)) TILES.push([lat, lon]);
 const FT = 0.3048, KT = 0.514444;
 
 // Country from the ICAO24 address block (adsb.lol doesn't give it). Unlisted blocks -> "Other".
@@ -110,19 +110,43 @@ function parseAdsbLol(a) {
     reg: a.r || null,                                                     // registration
   };
 }
-async function fromAdsbLol() {
-  const seen = new Map();
-  let ok = 0, lastErr = null;
-  for (const [lat, lon] of TILES) {
+// Two free providers with the same readsb data format. Each region is fetched from one of them,
+// and falls back to the other on any failure (e.g. HTTP 429), so neither gets hammered.
+const ADSB_PROVIDERS = [
+  { name: "adsb.lol", url: (lat, lon) => `https://api.adsb.lol/v2/point/${lat}/${lon}/250`, list: (j) => j.ac },
+  { name: "adsb.fi", url: (lat, lon) => `https://opendata.adsb.fi/api/v2/lat/${lat}/lon/${lon}/dist/250`, list: (j) => j.aircraft },
+];
+const TILE_GAP_MS = 1100;          // ~1 request/second overall
+const TILE_STALE_MS = 4 * 60e3;    // keep a region's last good result this long if it can't be refreshed
+const tileCache = new Map();       // tile index -> { t, list }
+let adsbErrors = [];
+
+async function fetchTile(i) {
+  const [lat, lon] = TILES[i];
+  const order = i % 2 ? [1, 0] : [0, 1];
+  for (const pi of order) {
+    const p = ADSB_PROVIDERS[pi];
     try {
-      const r = await fetch(`https://api.adsb.lol/v2/point/${lat}/${lon}/250`, { signal: AbortSignal.timeout(15000) });
-      if (!r.ok) throw new Error(`adsb.lol responded ${r.status}`);
-      for (const a of (await r.json()).ac || []) if (a.lat != null && a.lon != null) seen.set(a.hex, a);
-      ok++;
-    } catch (e) { lastErr = e; }
-    await new Promise((x) => setTimeout(x, 400));
+      const r = await fetch(p.url(lat, lon), { signal: AbortSignal.timeout(15000) });
+      if (!r.ok) throw new Error(`${p.name} responded ${r.status}`);
+      return { t: Date.now(), list: p.list(await r.json()) || [] };
+    } catch (e) { adsbErrors.push(why(e)); }
   }
-  if (ok < TILES.length / 2) throw lastErr || new Error("adsb.lol returned too few regions");
+  return null;
+}
+async function fromAdsb() {
+  adsbErrors = [];
+  for (let i = 0; i < TILES.length; i++) {
+    const res = await fetchTile(i);
+    if (res) tileCache.set(i, res);
+    await new Promise((x) => setTimeout(x, TILE_GAP_MS));
+  }
+  const seen = new Map();
+  for (const { t, list } of tileCache.values()) {
+    if (Date.now() - t > TILE_STALE_MS) continue;
+    for (const a of list) if (a.lat != null && a.lon != null) seen.set(a.hex, a);
+  }
+  if (!seen.size) throw new Error([...new Set(adsbErrors)].slice(0, 3).join("; ") || "no data from adsb.lol / adsb.fi");
   return [...seen.values()].map(parseAdsbLol)
     .filter((f) => f.lat >= BOX.lamin && f.lat <= BOX.lamax && f.lon >= BOX.lomin && f.lon <= BOX.lomax);
 }
@@ -144,7 +168,7 @@ async function poll() {
     // Ask both sources and merge by aircraft ID for the best coverage; either one alone is enough.
     const errors = [], got = {};
     const skipOpenSky = Date.now() < openSkyPausedUntil;
-    const jobs = [["adsb.lol", fromAdsbLol], ...(skipOpenSky ? [] : [["OpenSky", fromOpenSky]])];
+    const jobs = [["adsb", fromAdsb], ...(skipOpenSky ? [] : [["OpenSky", fromOpenSky]])];
     await Promise.all(jobs.map(async ([name, fn]) => {
       try { got[name] = await fn(); }
       catch (e) {
@@ -154,7 +178,7 @@ async function poll() {
     }));
     const byId = new Map();
     for (const f of got["OpenSky"] || []) byId.set(f.icao24, f);
-    for (const f of got["adsb.lol"] || []) {
+    for (const f of got["adsb"] || []) {
       const o = byId.get(f.icao24);
       byId.set(f.icao24, { ...o, ...f, country: o?.country || f.country });   // adsb.lol: type/reg/fresher fields; OpenSky: authoritative country
     }
